@@ -12,7 +12,16 @@ from app.services.reservations import (
     find_active_reservation_for_vehicle,
 )
 from app.util_json import record_to_dict
+import math
 
+def calculate_distance_m(lat1, lng1, lat2, lng2):
+    R = 6371000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rides", tags=["rides"])
@@ -120,12 +129,27 @@ async def start_ride(body: StartRideRequest, user_id: UUID = Depends(get_current
                     detail="You already have an active ride. End it before starting another.",
                 )
             vrow = await conn.fetchrow(
-                "SELECT availability_status FROM vehicles WHERE vehicle_id = $1 FOR UPDATE",
+                "SELECT availability_status, latitude, longitude FROM vehicles WHERE vehicle_id = $1 FOR UPDATE",
                 body.vehicle_id,
             )
             if not vrow:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
             vehicle_availability = (str(vrow["availability_status"]) or "").lower()
+            vehicle_lat = vrow["latitude"]
+vehicle_lng = vrow["longitude"]
+
+distance = calculate_distance_m(
+    body.start_lat,
+    body.start_lng,
+    vehicle_lat,
+    vehicle_lng
+)
+
+if distance > 5:
+    raise HTTPException(
+        status_code=400,
+        detail="You must be within 5 meters of the vehicle"
+    )
             reservation = await find_active_reservation_for_vehicle(conn, vehicle_id=body.vehicle_id)
 
             if vehicle_availability == "reserved":
