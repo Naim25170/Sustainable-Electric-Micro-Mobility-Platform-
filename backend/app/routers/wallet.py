@@ -9,7 +9,11 @@ from app.schemas import PurchasePackageRequest
 from app.util_json import record_to_dict
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
-
+PRICE_PER_MINUTE = {
+    "ebike": 0.10,
+    "scooter": 0.20,
+    "car": 0.50,
+}
 
 @router.get("/packages")
 async def list_packages(_user_id: UUID = Depends(get_current_user_id)):
@@ -123,3 +127,17 @@ async def purchase(body: PurchasePackageRequest, user_id: UUID = Depends(get_cur
                     detail="Missing ride_packages or user_package_purchases tables",
                 )
     return {"ok": True, "payment_id": str(pay_id)}
+async def charge_user_for_ride(conn, user_id, vehicle_type, duration_minutes):
+    price_per_min = PRICE_PER_MINUTE.get(vehicle_type, 0.2)
+    total_cost = round(duration_minutes * price_per_min, 2)
+
+    await conn.execute(
+        """
+        INSERT INTO payments (payment_id, user_id, amount, currency, status, method, created_at)
+        VALUES (gen_random_uuid(), $1, $2, 'USD', 'completed', 'ride_charge', now())
+        """,
+        user_id,
+        total_cost,
+    )
+
+    return total_cost

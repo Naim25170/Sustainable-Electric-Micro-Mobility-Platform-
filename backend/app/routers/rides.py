@@ -13,7 +13,7 @@ from app.services.reservations import (
     find_active_reservation_for_vehicle,
 )
 from app.util_json import record_to_dict
-
+from app.routers.wallet import charge_user_for_ride
 
 def calculate_distance_m(lat1, lng1, lat2, lng2):
     R = 6371000
@@ -141,8 +141,13 @@ async def start_ride(body: StartRideRequest, user_id: UUID = Depends(get_current
                 )
 
             vrow = await conn.fetchrow(
-                "SELECT availability_status, latitude, longitude FROM vehicles WHERE vehicle_id = $1 FOR UPDATE",
-                body.vehicle_id,
+                """
+                SELECT availability_status
+                FROM vehicles
+                WHERE vehicle_id = $1
+                FOR UPDATE
+                """,
+             body.vehicle_id,
             )
             if not vrow:
                 raise HTTPException(
@@ -151,8 +156,23 @@ async def start_ride(body: StartRideRequest, user_id: UUID = Depends(get_current
                 )
 
             vehicle_availability = (str(vrow["availability_status"]) or "").lower()
-            vehicle_lat = vrow["latitude"]
-            vehicle_lng = vrow["longitude"]
+            state_row = await conn.fetchrow(
+                """
+                SELECT current_lat, current_lng
+                FROM vehicle_current_state
+                WHERE vehicle_id = $1
+                """,
+                body.vehicle_id,
+            )
+
+            if not state_row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Vehicle location not found",
+                )
+
+            vehicle_lat = state_row["current_lat"]
+            vehicle_lng = state_row["current_lng"]
 
             distance = calculate_distance_m(
                 body.start_lat,
@@ -271,17 +291,64 @@ async def end_ride(body: EndRideRequest, user_id: UUID = Depends(get_current_use
                 )
 
             vehicle_id = row["vehicle_id"]
+            vehicle_row = await conn.fetchrow(
+                 """
+                SELECT type
+                FROM vehicles
+                WHERE vehicle_id = $1
+                """,
+                vehicle_id,
+            )
+
+            ride_row = await conn.fetchrow(
+                """
+                SELECT started_at
+                FROM rides
+                WHERE ride_id = $1
+                """,
+                body.ride_id,
+            )
+
+            if not vehicle_row or not ride_row or not ride_row["started_at"]:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Missing ride or vehicle information for pricing",
+                )
+
+            duration_row = await conn.fetchrow(
+                """
+                SELECT EXTRACT(EPOCH FROM (now() - started_at)) / 60 AS minutes
+                FROM rides
+                WHERE ride_id = $1
+                """,
+                body.ride_id,
+            )
+
+            duration_minutes = float(duration_row["minutes"] or 0)
+
+            total_cost = await charge_user_for_ride(
+                conn,
+                user_id,
+                str(vehicle_row["type"]),
+                duration_minutes,
+            )
 
             await conn.execute(
                 """
                 UPDATE rides
-                SET ended_at = now(), status = 'completed', end_lat = $1, end_lng = $2
-                WHERE ride_id = $3
+                SET ended_at = now(),
+                status = 'completed',
+                end_lat = $1,
+                end_lng = $2,
+                total_cost = $3
+                WHERE ride_id = $4
                 """,
                 body.end_lat,
                 body.end_lng,
+                total_cost,
                 body.ride_id,
             )
+           
 
             await conn.execute(
                 "UPDATE vehicles SET availability_status = 'available' WHERE vehicle_id = $1",

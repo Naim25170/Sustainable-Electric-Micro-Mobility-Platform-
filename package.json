@@ -10,5 +10,12 @@
     "lint": "npm run lint --prefix electric-micro-mobility",
     "expo": "npm exec --prefix electric-micro-mobility -- expo",
     "backend": "cd backend && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+  },
+  "dependencies": {
+    "expo": "^55.0.14"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.10",
+    "typescript": "~5.9.2"
   }
 }
